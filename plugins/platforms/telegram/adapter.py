@@ -4568,6 +4568,235 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+
+    def _gptprof_profile_dir(self) -> _Path:
+        """Return the public gptprof profile directory for this Hermes home."""
+        try:
+            from hermes_constants import get_hermes_home
+            base = get_hermes_home()
+        except Exception:
+            base = _Path(os.path.expanduser("~/.hermes"))
+        return _Path(os.getenv("HERMES_HCP", str(base / "gptprof" / "profiles"))).expanduser()
+
+    def _gptprof_load_json(self, path: _Path, default: Any) -> Any:
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return default
+
+    def _gptprof_save_json(self, path: _Path, data: Any) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        tmp = path.with_suffix(path.suffix + ".tmp")
+        tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        tmp.replace(path)
+
+    def _gptprof_auth_path(self) -> _Path:
+        explicit = os.getenv("HERMES_AUTH")
+        if explicit:
+            return _Path(explicit).expanduser()
+        try:
+            from hermes_constants import get_hermes_home
+            return get_hermes_home() / "auth.json"
+        except Exception:
+            return _Path(os.path.expanduser("~/.hermes/auth.json"))
+
+    def _gptprof_config_path(self) -> _Path:
+        explicit = os.getenv("HERMES_CONFIG")
+        if explicit:
+            return _Path(explicit).expanduser()
+        try:
+            from hermes_cli.config import get_config_path
+            return get_config_path()
+        except Exception:
+            return _Path(os.path.expanduser("~/.hermes/config.yaml"))
+
+    def _gptprof_switch_profile(self, slug: str, model: str) -> tuple[bool, str]:
+        """Switch OpenAI-Codex OAuth auth to a public gptprof profile.
+
+        Public gptprof profile files live under ~/.hermes/gptprof/profiles/<slug>.json.
+        This handler intentionally uses env-driven generic paths; it contains no
+        operator-specific profile names, chat IDs, or host assumptions.
+        """
+        if not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", slug or ""):
+            return False, "Invalid profile slug."
+        model = (model or "gpt-5.5").strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:/+-]{1,120}", model):
+            return False, "Invalid model name."
+
+        profile_path = self._gptprof_profile_dir() / f"{slug}.json"
+        profile = self._gptprof_load_json(profile_path, {})
+        if not isinstance(profile, dict) or not profile.get("access_token"):
+            return False, f"Profile `{slug}` is missing or has no access_token."
+
+        auth_path = self._gptprof_auth_path()
+        auth = self._gptprof_load_json(auth_path, {})
+        if not isinstance(auth, dict):
+            auth = {}
+
+        codex = dict(auth.get("codex") or {})
+        codex.update({
+            "profile": slug,
+            "access_token": profile.get("access_token"),
+            "refresh_token": profile.get("refresh_token"),
+            "email": profile.get("email"),
+            "plan": profile.get("plan"),
+            "auth_mode": "chatgpt",
+        })
+        auth["codex"] = codex
+        auth["active_provider"] = "openai-codex"
+
+        providers = auth.setdefault("providers", {})
+        if isinstance(providers, dict):
+            provider_state = dict(providers.get("openai-codex") or {})
+            tokens = dict(provider_state.get("tokens") or {})
+            tokens.update(codex)
+            provider_state["tokens"] = tokens
+            provider_state["auth_mode"] = "chatgpt"
+            provider_state.pop("last_auth_error", None)
+            providers["openai-codex"] = provider_state
+
+        pool_root = auth.setdefault("credential_pool", {})
+        if isinstance(pool_root, dict):
+            old_pool = pool_root.get("openai-codex")
+            source = f"gptprof:{slug}"
+            selected = {
+                "source": source,
+                "profile": slug,
+                "label": slug,
+                "provider": "openai-codex",
+                "email": profile.get("email"),
+                "plan": profile.get("plan"),
+                "access_token": profile.get("access_token"),
+                "refresh_token": profile.get("refresh_token"),
+                "priority": 0,
+                "last_status": "ok",
+            }
+            remaining = []
+            if isinstance(old_pool, list):
+                for item in old_pool:
+                    if not isinstance(item, dict):
+                        continue
+                    item_profile = str(item.get("profile") or item.get("label") or "")
+                    item_source = str(item.get("source") or "")
+                    if item_profile == slug or item_source in {source, "device_code"}:
+                        continue
+                    if item.get("priority") == 0:
+                        item = {**item, "priority": 10}
+                    remaining.append(item)
+            pool_root["openai-codex"] = [selected, *remaining]
+
+        self._gptprof_save_json(auth_path, auth)
+
+        # Persist the model/provider globally so a gateway restart keeps the route.
+        try:
+            from hermes_cli.config import read_raw_config, save_config
+            cfg = read_raw_config() or {}
+            if not isinstance(cfg, dict):
+                cfg = {}
+            raw_model = cfg.get("model")
+            if isinstance(raw_model, dict):
+                model_cfg = raw_model
+            elif isinstance(raw_model, str) and raw_model.strip():
+                model_cfg = {"default": raw_model.strip()}
+                cfg["model"] = model_cfg
+            else:
+                model_cfg = {}
+                cfg["model"] = model_cfg
+            model_cfg["default"] = model
+            model_cfg["provider"] = "openai-codex"
+            # Preserve the model/provider keys even if they match defaults.
+            save_config(cfg, preserve_keys={("model", "default"), ("model", "provider")})
+        except Exception as exc:
+            return True, f"Profile `{slug}` activated, but config.yaml update failed: {exc}"
+
+        return True, f"Profile `{slug}` activated with `{model}`. Send `/new` for a fresh session."
+
+    async def _handle_gptprof_callback(self, query, data: str) -> None:
+        """Handle public gptprof inline-button callbacks.
+
+        Supports:
+        - gptprof:<slug>:<model>   switch profile + persist openai-codex model
+        - gptprof:refresh          rerender card by running the installed script
+        - gptprof:autoswitch       run autoswitch script
+        Other public buttons are acknowledged with setup guidance rather than
+        silently doing nothing.
+        """
+        caller_id = str(getattr(getattr(query, "from_user", None), "id", ""))
+        query_message = getattr(query, "message", None)
+        query_chat_id = getattr(query_message, "chat_id", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_user_name = getattr(getattr(query, "from_user", None), "first_name", None)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ You are not authorized to use gptprof.")
+            return
+
+        parts = data.split(":")
+        action = parts[1] if len(parts) > 1 else ""
+        if action in {"refresh", "card"}:
+            await query.answer(text="Refreshing gptprof card…")
+            cmd = [sys.executable, os.path.expanduser("~/.local/bin/gptprof_send_buttons.py")]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                    env={**os.environ, "GPTPROF_FORCE_REFRESH": "1"},
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                if proc.returncode == 0:
+                    detail = (stdout.decode(errors="replace") or "gptprof card refreshed").strip()
+                    await query.answer(text=detail[:180] or "gptprof card refreshed")
+                else:
+                    detail = (stderr.decode(errors="replace") or stdout.decode(errors="replace") or "refresh failed").strip()
+                    await query.answer(text=detail[:180])
+            except Exception as exc:
+                await query.answer(text=f"Refresh failed: {exc}"[:180])
+            return
+
+        if action == "autoswitch":
+            await query.answer(text="Running gptprof autoswitch…")
+            cmd = [sys.executable, os.path.expanduser("~/.local/bin/gptprof_autoswitch.py")]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+                detail = (stdout.decode(errors="replace") or stderr.decode(errors="replace") or "Autoswitch: no output").strip()
+                await query.answer(text=detail[:180])
+            except Exception as exc:
+                await query.answer(text=f"Autoswitch failed: {exc}"[:180])
+            return
+
+        if action in {"new_auth", "check_auth", "pi_route"}:
+            await query.answer(text="This gptprof action needs local setup; use /gptprof status or CLI docs.", show_alert=True)
+            return
+
+        if len(parts) < 3:
+            await query.answer(text="Invalid gptprof callback.")
+            return
+        slug = parts[1]
+        model = ":".join(parts[2:])
+        ok, message = self._gptprof_switch_profile(slug, model)
+        try:
+            await query.edit_message_text(
+                text=("✅ " if ok else "❌ ") + _html.escape(message),
+                parse_mode=ParseMode.HTML,
+                reply_markup=None,
+            )
+        except Exception:
+            pass
+        await query.answer(text=("Profile switched" if ok else "Switch failed"), show_alert=not ok)
+
     async def _notify_clarify_expired(self, query, user_display: str) -> None:
         """Tell the user a clarify tap arrived too late to be delivered.
 
@@ -4613,6 +4842,11 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Public gptprof callbacks (gptprof:<slug>:<model> / actions) ---
+        if data.startswith("gptprof:"):
+            await self._handle_gptprof_callback(query, data)
             return
 
         # --- Gmail-triage callbacks (gt:verb:arg) ---

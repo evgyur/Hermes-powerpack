@@ -10,6 +10,7 @@ Bundled skills:
 - `perplex` — source-backed current web research.
 - `par` — fast breadth-first source discovery.
 - `telegram-chip` — safe contract for user-owned Telegram runtime access.
+- `gptprof-hermes` — optional GPT/OpenAI-Codex profile switcher with `/gptprof`, `/gptt`, `/mmfast` and Telegram callback support.
 - upstream GitHub/Codex skills already included in Hermes: `github-*`, `codex`, `hermes-agent`.
 
 ## Lesson 2 — site design with design.md / Refero / Hallmark / Taste / Open Design

@@ -9,6 +9,7 @@ This repository starts from upstream [`NousResearch/hermes-agent`](https://githu
 - presentation/document generation skill;
 - PiAPI video toolkit skill;
 - public-safe `telegram-chip` skill contract for user-owned Telegram runtimes;
+- optional public `gptprof-hermes` profile switcher (`/gptprof`, `/gptt`, `/mmfast`) with Telegram callback handling;
 - install wrapper for workshop use.
 
 No private organization infrastructure, chat IDs, sessions, secrets, local paths, or runtime artifacts are intentionally included.
@@ -28,6 +29,25 @@ hermes doctor
 ```bash
 hermes chat -q "Say hello and list available built-in Powerpack skills"
 ```
+
+## Optional GPT profile switcher
+
+`install-powerpack.sh` installs public `gptprof-hermes` helpers and adds three quick commands without overwriting existing user commands:
+
+- `/gptprof` — sends a Telegram profile card with inline buttons;
+- `/gptt` — switches globally to `openai-codex/gpt-5.5`;
+- `/mmfast` — switches globally to MiniMax fast mode.
+
+To use `/gptprof`, configure your own local values outside git:
+
+```bash
+cat >> ~/.hermes/.env <<'EOF'
+GPTPROF_CHAT_ID=123456789
+EOF
+mkdir -p ~/.hermes/gptprof/profiles
+```
+
+Profile JSON files belong in `~/.hermes/gptprof/profiles/<slug>.json` and must stay local.
 
 ## Telegram runtime
 
