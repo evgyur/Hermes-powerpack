@@ -72,7 +72,7 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
     """Build the one-time notice shown when Codex gpt-5.5 raises compaction.
 
     ``autoraise`` is ``{"from": <old_ratio>, "to": <new_ratio>}``. The same
-    text is printed inline for CLI users and replayed via ``status_callback``
+    text is delivered inline for CLI users or replayed via ``status_callback``
     for gateway users, so it must be self-contained and include the exact
     opt-back-out command.
     """
@@ -84,6 +84,14 @@ def _build_codex_gpt55_autoraise_notice(autoraise: Dict[str, float]) -> str:
         f"summarizing.\n"
         f"  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
     )
+
+
+def _should_print_codex_gpt55_autoraise_notice(agent: Any) -> bool:
+    """Return True only for startup surfaces where stdout is user-visible once."""
+    if getattr(agent, "quiet_mode", False):
+        return False
+    platform = str(getattr(agent, "platform", "") or "").strip().lower()
+    return platform in {"", "cli"}
 
 
 def _normalized_custom_base_url(value: Any) -> str:
@@ -1821,11 +1829,16 @@ def init_agent(
         else:
             print(f"📊 Context limit: {agent.context_compressor.context_length:,} tokens (auto-compression disabled)")
         # One-time notice when the Codex gpt-5.5 autoraise kicked in, with the
-        # exact opt-back-out command. Printed inline at startup for CLI users;
-        # gateway users get the same text replayed via _compression_warning on
-        # turn 1 (set below, after the warning slot is initialized).
+        # exact opt-back-out command. Print it only for CLI/no-platform startup
+        # surfaces. Gateway users get the same text replayed via
+        # _compression_warning on turn 1; printing here too makes Telegram and
+        # similar adapters deliver the notice twice.
         _autoraise = getattr(agent, "_compression_threshold_autoraised", None)
-        if _autoraise and compression_enabled:
+        if (
+            _autoraise
+            and compression_enabled
+            and _should_print_codex_gpt55_autoraise_notice(agent)
+        ):
             print(_build_codex_gpt55_autoraise_notice(_autoraise))
 
     # Check immediately so CLI users see the warning at startup.
