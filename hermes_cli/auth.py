@@ -957,6 +957,71 @@ def _auth_lock_path() -> Path:
     return _auth_file_path().with_suffix(".lock")
 
 
+def _select_auth_store_owner_ids(
+    existing_stat: Any,
+    parent_stat: Any,
+) -> Optional[Tuple[int, int]]:
+    """Choose the POSIX owner for root-written auth-store files.
+
+    Root-run install/auth helpers may write into a service user's
+    ``HERMES_HOME``.  Atomic replace would otherwise leave ``auth.json`` owned
+    by root, and the final 0600 mode then makes the gateway's service user
+    unable to read its own credentials.  Prefer an existing non-root file
+    owner; otherwise inherit the auth directory owner.
+    """
+    if existing_stat is not None and getattr(existing_stat, "st_uid", 0) != 0:
+        return int(existing_stat.st_uid), int(existing_stat.st_gid)
+    if parent_stat is not None and getattr(parent_stat, "st_uid", 0) != 0:
+        return int(parent_stat.st_uid), int(parent_stat.st_gid)
+    if existing_stat is not None:
+        return int(existing_stat.st_uid), int(existing_stat.st_gid)
+    if parent_stat is not None:
+        return int(parent_stat.st_uid), int(parent_stat.st_gid)
+    return None
+
+
+def _auth_store_owner_ids_for_root_write(path: Path) -> Optional[Tuple[int, int]]:
+    if os.name != "posix" or not hasattr(os, "geteuid") or os.geteuid() != 0:
+        return None
+
+    existing_stat = None
+    try:
+        existing_stat = path.stat()
+    except OSError:
+        pass
+
+    parent_stat = None
+    try:
+        parent_stat = path.parent.stat()
+    except OSError:
+        pass
+
+    return _select_auth_store_owner_ids(existing_stat, parent_stat)
+
+
+def _apply_auth_store_owner(path: Path, owner_ids: Optional[Tuple[int, int]]) -> None:
+    if owner_ids is None or os.name != "posix" or not hasattr(os, "chown"):
+        return
+    try:
+        os.chown(path, owner_ids[0], owner_ids[1])
+    except OSError:
+        pass
+
+
+def _repair_auth_lock_owner_for_root() -> None:
+    lock_path = _auth_lock_path()
+    owner_ids = _auth_store_owner_ids_for_root_write(lock_path)
+    if owner_ids is None:
+        return
+    try:
+        lock_path.parent.mkdir(parents=True, exist_ok=True)
+        lock_path.touch(mode=stat.S_IRUSR | stat.S_IWUSR, exist_ok=True)
+        _apply_auth_store_owner(lock_path, owner_ids)
+        lock_path.chmod(stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+
 _auth_lock_holder = threading.local()
 
 
@@ -1042,6 +1107,7 @@ def _auth_store_lock(timeout_seconds: float = AUTH_LOCK_TIMEOUT_SECONDS):
     refresh paths follow this order; violating it risks deadlock
     against a concurrent import on the shared store.
     """
+    _repair_auth_lock_owner_for_root()
     with _file_lock(
         _auth_lock_path(),
         _auth_lock_holder,
@@ -1103,6 +1169,7 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
     # No-op on Windows (POSIX mode bits not enforced); ignore failures.
     # secure_parent_dir refuses to chmod / or top-level dirs (#25821).
     secure_parent_dir(auth_file)
+    owner_ids = _auth_store_owner_ids_for_root_write(auth_file)
     auth_store["version"] = AUTH_STORE_VERSION
     auth_store["updated_at"] = datetime.now(timezone.utc).isoformat()
     payload = json.dumps(auth_store, indent=2) + "\n"
@@ -1121,7 +1188,9 @@ def _save_auth_store(auth_store: Dict[str, Any], target_path: Optional[Path] = N
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
+        _apply_auth_store_owner(tmp_path, owner_ids)
         atomic_replace(tmp_path, auth_file)
+        _apply_auth_store_owner(auth_file, owner_ids)
         try:
             dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
         except OSError:
