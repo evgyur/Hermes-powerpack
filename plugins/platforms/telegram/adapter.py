@@ -4778,7 +4778,35 @@ class TelegramAdapter(BasePlatformAdapter):
             return
 
         if action in {"new_auth", "check_auth", "pi_route"}:
-            await query.answer(text="This gptprof action needs local setup; use /gptprof status or CLI docs.", show_alert=True)
+            command_map = {
+                "new_auth": "device-start",
+                "check_auth": "device-check",
+                "pi_route": "apply-pi-route",
+            }
+            cmd = [sys.executable, os.path.expanduser("~/.local/bin/codex-profile-manager.py"), command_map[action]]
+            try:
+                proc = await asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=45)
+                raw = (stdout.decode(errors="replace") or stderr.decode(errors="replace") or "{}").strip()
+                try:
+                    payload = json.loads(raw)
+                except Exception:
+                    payload = {"ok": proc.returncode == 0, "message": raw[:500]}
+                if action == "new_auth" and payload.get("ok"):
+                    text = f"Open {payload.get('verificationUrl')} and enter code {payload.get('userCode')}"
+                elif action == "check_auth" and payload.get("pending"):
+                    text = f"Still pending: {payload.get('verificationUrl')} code {payload.get('userCode')}"
+                elif action == "pi_route" and payload.get("ok"):
+                    text = "Pi route applied. Send /new for a clean session."
+                else:
+                    text = payload.get("message") or payload.get("error") or raw or "gptprof action complete"
+                await query.answer(text=str(text)[:200], show_alert=True)
+            except Exception as exc:
+                await query.answer(text=f"gptprof action failed: {exc}"[:200], show_alert=True)
             return
 
         if len(parts) < 3:
