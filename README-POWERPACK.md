@@ -44,3 +44,7 @@ Do not commit `.session`, `.env`, phone numbers, API IDs/hashes, bot tokens, exp
 - not a private operator distribution;
 - not a repository of private skills or production routes;
 - not a place for credentials or Telegram sessions.
+## Workshop skills
+
+See [WORKSHOP-SKILLS.md](WORKSHOP-SKILLS.md) for the public-safe skill bundle from the first three Codex + Hermes workshop lessons.
+

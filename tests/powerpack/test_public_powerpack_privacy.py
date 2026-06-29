@@ -13,6 +13,19 @@ def test_powerpack_public_skills_exist():
         "skills/telegram/telegram-chip/SKILL.md",
         "scripts/install-powerpack.sh",
         "README-POWERPACK.md",
+        "WORKSHOP-SKILLS.md",
+        "skills/po/SKILL.md",
+        "skills/perplex/SKILL.md",
+        "skills/par/SKILL.md",
+        "skills/design/refero-web-design/SKILL.md",
+        "skills/hallmark/SKILL.md",
+        "skills/design-pack/taste-skill/SKILL.md",
+        "skills/webd/SKILL.md",
+        "skills/supergoal/SKILL.md",
+        "skills/devops/server-doctor/SKILL.md",
+        "skills/devops/public-endpoint-ops/SKILL.md",
+        "skills/infrastructure/porkbun-api-dns/SKILL.md",
+        "skills/devops/supabase-project-ops/SKILL.md",
     ]
     missing = [p for p in required if not (root / p).exists()]
     assert not missing
