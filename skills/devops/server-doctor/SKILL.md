@@ -31,13 +31,13 @@ ss -ltnp
 systemctl --failed || true
 ```
 
-For app servers:
+For app servers, run non-mutating checks first. Use elevated privileges only outside this skill after the operator explicitly approves the target and action.
 
 ```bash
-sudo systemctl status <service> --no-pager
-sudo journalctl -u <service> -n 120 --no-pager
-docker ps --format 'table {{.Names}}	{{.Status}}	{{.Ports}}'
-nginx -t
+systemctl status <service> --no-pager || true
+journalctl -u <service> -n 120 --no-pager || true
+docker ps --format 'table {{.Names}}	{{.Status}}	{{.Ports}}' || true
+nginx -t || true
 ```
 
 ## Output contract

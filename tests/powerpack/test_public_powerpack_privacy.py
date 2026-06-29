@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 
@@ -33,27 +34,55 @@ def test_powerpack_public_skills_exist():
 
 def test_public_powerpack_files_do_not_include_private_markers():
     root = Path(__file__).resolve().parents[2]
-    scanned_roots = [root / "README-POWERPACK.md", root / "skills", root / "scripts"]
+    scanned_roots = [
+        root / "README-POWERPACK.md",
+        root / "WORKSHOP-SKILLS.md",
+        root / "skills",
+        root / "scripts",
+    ]
     forbidden = [
         "Human" + "20",
         "human" + "20",
+        "Human " + "2.0",
         "Chip" + "CR",
         "chip" + "manager",
         "617" + "744" + "661",
-        "TELEGRAM_BOT_TOKEN=" + "***",
-        "OPENROUTER_API_KEY=" + "***",
+        "-100" + "3712304136",
+        "-100" + "4069237649",
+        "185" + ".212.129.177",
+        "72" + ".56.32.125",
+        "178" + ".63.60.99",
+        "138" + ".201.30.209",
+        "/home/" + "chip",
+        "/opt/" + "telegram-chip",
+        "/opt/" + "workshop-bot",
+        "human" + "20team",
+        "Evgeny " + "Yurchenko",
+        "e." + "yurchenko",
         "BEGIN " + "PRIVATE KEY",
     ]
+    secret_patterns = {
+        "github_token": re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{20,}\b"),
+        "openai_style_key": re.compile(r"\bsk-(?:proj-)?[A-Za-z0-9_-]{20,}\b"),
+        "telegram_bot_token": re.compile(r"\b\d{6,}:[A-Za-z0-9_-]{20,}\b"),
+        "aws_access_key": re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+        "private_key_block": re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
+    }
     offenders = []
     for base in scanned_roots:
         paths = [base] if base.is_file() else list(base.rglob("*"))
         for path in paths:
             if not path.is_file() or ".git" in path.parts:
                 continue
-            if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4"}:
+            if path.suffix.lower() in {
+                ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".ico", ".woff", ".woff2", ".ttf"
+            }:
                 continue
             text = path.read_text(errors="ignore")
             for marker in forbidden:
                 if marker in text:
-                    offenders.append((str(path.relative_to(root)), marker))
+                    offenders.append((str(path.relative_to(root)), "marker", marker))
+            for name, pattern in secret_patterns.items():
+                if pattern.search(text):
+                    offenders.append((str(path.relative_to(root)), "secret-pattern", name))
     assert offenders == []
