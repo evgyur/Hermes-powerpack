@@ -2290,6 +2290,101 @@ def _load_gateway_runtime_config() -> dict:
     return expanded if isinstance(expanded, dict) else {}
 
 
+
+def _gateway_profile_route_candidate(routes: Any, *, chat_id: str, thread_id: str) -> Optional[str]:
+    """Return a routed profile name from a mapping/list route config.
+
+    Supported shapes: ``{"<chat_id>": "profile"}``,
+    ``{"<chat_id>:<thread_id>": "profile"}``, or list entries like
+    ``{"chats": [...], "threads": [...], "profile": "profile"}``.
+    """
+    if not chat_id:
+        return None
+
+    if isinstance(routes, dict):
+        candidates: list[Any] = []
+        if thread_id:
+            candidates.append(f"{chat_id}:{thread_id}")
+        candidates.append(chat_id)
+        if chat_id.lstrip("-").isdigit():
+            try:
+                candidates.append(int(chat_id))
+            except ValueError:
+                pass
+        for candidate in candidates:
+            routed = routes.get(candidate)
+            if routed:
+                return str(routed).strip() or None
+        return None
+
+    if isinstance(routes, list):
+        for item in routes:
+            if not isinstance(item, dict):
+                continue
+            chats = item.get("chats") or item.get("chat_ids") or item.get("channels") or []
+            if isinstance(chats, (str, int)):
+                chats = [chats]
+            if chat_id not in {str(chat) for chat in chats}:
+                continue
+            threads = item.get("threads") or item.get("thread_ids")
+            if threads is not None:
+                if isinstance(threads, (str, int)):
+                    threads = [threads]
+                if not thread_id or thread_id not in {str(thread) for thread in threads}:
+                    continue
+            routed = item.get("profile") or item.get("name")
+            if routed:
+                return str(routed).strip() or None
+    return None
+
+
+def _resolve_shared_credential_profile_route(config: dict, source: Any) -> Optional[str]:
+    """Resolve optional chat/topic -> profile routing for a shared adapter.
+
+    This complements ``gateway.multiplex_profiles`` for one inbound bot token
+    serving multiple profile homes. The adapter stays owned by the default
+    gateway; only the agent turn is routed by stamping ``SessionSource.profile``.
+    """
+    if not isinstance(config, dict):
+        return None
+    platform = getattr(getattr(source, "platform", None), "value", None) or str(getattr(source, "platform", "") or "")
+    platform_cfg = config.get(platform) or {}
+    if not isinstance(platform_cfg, dict):
+        return None
+
+    chat_id = str(getattr(source, "chat_id", "") or "")
+    thread_id = str(getattr(source, "thread_id", "") or "")
+    raw_profile = None
+    for key in ("profile_routes", "chat_profiles", "channel_profiles"):
+        raw_profile = _gateway_profile_route_candidate(
+            platform_cfg.get(key),
+            chat_id=chat_id,
+            thread_id=thread_id,
+        )
+        if raw_profile:
+            break
+    if not raw_profile:
+        return None
+
+    try:
+        from hermes_cli.profiles import normalize_profile_name, profile_exists
+        profile_name = normalize_profile_name(str(raw_profile))
+        if profile_name == "default":
+            return None
+        if not profile_exists(profile_name):
+            logger.warning(
+                "Gateway profile route for %s chat=%s thread=%s points to missing profile %r",
+                platform,
+                chat_id,
+                thread_id,
+                profile_name,
+            )
+            return None
+        return profile_name
+    except Exception as exc:
+        logger.warning("Gateway profile route resolution failed: %s", exc)
+        return None
+
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
@@ -8474,6 +8569,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 token = val.strip()
                 break
         if not token:
+            config = getattr(adapter, "config", None)
+            for attr in ("token", "api_key"):
+                val = getattr(config, attr, None)
+                if isinstance(val, str) and val.strip():
+                    token = val.strip()
+                    break
+        if not token:
             return None
         import hashlib
         return hashlib.sha256(("hermes-mux:" + token).encode("utf-8")).hexdigest()[:16]
@@ -8680,6 +8782,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         7. Return response
         """
         source = event.source
+        if not getattr(source, "profile", None) and getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            routed_profile = _resolve_shared_credential_profile_route(_load_gateway_runtime_config(), source)
+            if routed_profile:
+                try:
+                    source = dataclasses.replace(source, profile=routed_profile)
+                except Exception:
+                    source.profile = routed_profile
+                event.source = source
+                logger.info(
+                    "Gateway profile route matched: platform=%s chat=%s thread=%s profile=%s",
+                    source.platform.value if source.platform else "unknown",
+                    source.chat_id or "unknown",
+                    source.thread_id or "",
+                    routed_profile,
+                )
 
         # 🔴 Cross-session leak guard. This handler runs inside a per-message
         # asyncio task created via create_task(), which snapshots the spawning
@@ -10022,7 +10139,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
-            _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            if getattr(source, "profile", None) and getattr(getattr(self, "config", None), "multiplex_profiles", False):
+                with _profile_runtime_scope(self._resolve_profile_home_for_source(source)):
+                    _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
+            else:
+                _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
             # Goal continuation: after the agent returns a final response
             # for this turn, check any standing /goal — the judge will
             # either mark it done, pause it (budget), or enqueue a
@@ -10433,6 +10554,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             except Exception:
                 pass
         return source
+
+    def _agent_session_db_for_source(self, source):
+        """Return the SessionDB that should persist an agent turn for source."""
+        if not (
+            getattr(source, "profile", None)
+            and getattr(getattr(self, "config", None), "multiplex_profiles", False)
+        ):
+            return getattr(self._session_db, "_db", self._session_db)
+        profile_name = str(getattr(source, "profile", "") or "").strip()
+        if not profile_name or profile_name == "default":
+            return getattr(self._session_db, "_db", self._session_db)
+        cache = getattr(self, "_profile_session_dbs", None)
+        if cache is None:
+            cache = {}
+            self._profile_session_dbs = cache
+        db = cache.get(profile_name)
+        if db is not None:
+            return db
+        from hermes_state import SessionDB
+        profile_home = self._resolve_profile_home_for_source(source)
+        db = SessionDB(profile_home / "state.db")
+        cache[profile_name] = db
+        return db
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
@@ -17686,7 +17830,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
-                    session_db=getattr(self._session_db, "_db", self._session_db),
+                    session_db=self._agent_session_db_for_source(source),
                     fallback_model=self._fallback_model,
                 )
                 if _cache_lock and _cache is not None:
