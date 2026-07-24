@@ -55,3 +55,22 @@ def test_save_auth_store_applies_selected_owner_to_temp_and_final(
     )
     assert ("auth.json", (1001, 1001)) in calls
     assert auth_path.exists()
+
+
+def test_auth_store_lock_repairs_the_selected_target_lock(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    target_path = tmp_path / "profile" / "auth.json"
+    repaired: list[object] = []
+
+    monkeypatch.setattr(
+        auth,
+        "_repair_auth_lock_owner_for_root",
+        lambda lock_path=None: repaired.append(lock_path),
+    )
+
+    with auth._auth_store_lock(target_path=target_path):
+        pass
+
+    assert repaired == [target_path.with_suffix(".lock")]

@@ -45,6 +45,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
+from agent.skill_utils import (
+    extract_skill_description,
+    is_skill_description_truncated_for_prompt,
+    parse_frontmatter as _parse_frontmatter,
+    SKILL_PROMPT_DESC_LIMIT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -150,6 +156,22 @@ import yaml
 # All skills live in ~/.hermes/skills/ (single source of truth)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
+_SKILLS_DIR_AT_IMPORT = SKILLS_DIR
+
+
+def _skills_dir() -> Path:
+    """Return the active profile's skills directory at call time.
+
+    Long-lived multi-profile runtimes (Dashboard/TUI/Desktop backend, cron,
+    kanban workers) import this module once under the launch HERMES_HOME and
+    later bind a different profile per session (#40677). Honor an explicitly
+    patched module-level ``SKILLS_DIR`` (tests), otherwise resolve from the
+    live profile-scoped HERMES_HOME on every call.
+    """
+    configured = Path(SKILLS_DIR)
+    if configured != _SKILLS_DIR_AT_IMPORT:
+        return configured
+    return get_hermes_home() / "skills"
 
 MAX_NAME_LENGTH = 64
 MAX_DESCRIPTION_LENGTH = 1024
@@ -174,7 +196,7 @@ def _containing_skills_root(skill_path: Path) -> Path:
             return root
         except (ValueError, OSError):
             continue
-    return SKILLS_DIR
+    return _skills_dir()
 
 
 def _is_path_redirect(path: Path) -> bool:
@@ -358,6 +380,23 @@ def _background_review_write_guard(
                     f"skill '{name}'."
                 ),
             }
+        # Manually authored skills (created_by != "agent") are off-limits
+        # to autonomous curation. This prevents the LLM consolidation pass
+        # from archiving skills the user placed manually (e.g. via URL
+        # install or direct SKILL.md authoring), which lack the
+        # `created_by: "agent"` marker.
+        usage_data = skill_usage.load_usage()
+        usage_rec = usage_data.get(name)
+        if isinstance(usage_rec, dict) and not skill_usage._is_curator_managed_record(usage_rec):
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing background curator {action} for skill "
+                    f"'{name}': the skill records show it is not agent-created "
+                    f"(created_by={usage_rec.get('created_by')!r}). Manually authored "
+                    f"skills are off-limits to autonomous curation."
+                ),
+            }
     except Exception:
         logger.debug("owned skill guard lookup failed for %s", name, exc_info=True)
     return None
@@ -513,6 +552,9 @@ def _validate_frontmatter(content: str) -> Optional[str]:
     if not content.strip():
         return "Content cannot be empty."
 
+    # Tolerate a leading UTF-8 BOM (Windows editors) before the fence.
+    content = content.lstrip("\ufeff")
+
     if not content.startswith("---"):
         return "SKILL.md must start with YAML frontmatter (---). See existing skills for format."
 
@@ -562,8 +604,8 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 def _resolve_skill_dir(name: str, category: str = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
-        return SKILLS_DIR / category / name
-    return SKILLS_DIR / name
+        return _skills_dir() / category / name
+    return _skills_dir() / name
 
 
 def _find_skill(name: str) -> Optional[Dict[str, Any]]:
@@ -608,8 +650,9 @@ def _find_skill_in_other_profiles(name: str) -> List[Tuple[str, Path]]:
         return matches
 
     # Collect (profile_name, skills_dir) for every profile EXCEPT the
-    # one whose SKILLS_DIR we already searched in _find_skill().
-    active_dir = SKILLS_DIR.resolve() if SKILLS_DIR.exists() else SKILLS_DIR
+    # one whose skills dir we already searched in _find_skill().
+    _active = _skills_dir()
+    active_dir = _active.resolve() if _active.exists() else _active
     candidates: List[Tuple[str, Path]] = []
 
     # Default profile (~/.hermes/skills) — only consider when active is non-default.
@@ -773,6 +816,18 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
 # Core actions
 # =============================================================================
 
+
+def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> None:
+    """Append a system_prompt_preview field when the description will be truncated."""
+    fm, _ = _parse_frontmatter(content)
+    if is_skill_description_truncated_for_prompt(fm):
+        result["system_prompt_preview"] = (
+            f"System prompt will show: \"{extract_skill_description(fm)}\" — "
+            f"keep the trigger self-contained in the first "
+            f"{SKILL_PROMPT_DESC_LIMIT - 3} chars."
+        )
+
+
 def _create_skill(name: str, content: str, category: str = None) -> Dict[str, Any]:
     """Create a new user skill with SKILL.md content."""
     # Validate name
@@ -828,7 +883,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     result = {
         "success": True,
         "message": f"Skill '{name}' created.",
-        "path": str(skill_dir.relative_to(SKILLS_DIR)),
+        "path": str(skill_dir.relative_to(_skills_dir())),
         "skill_md": str(skill_md),
         "_change": {"description": _desc},
     }
@@ -838,6 +893,7 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
         "To add reference files, templates, or scripts, use "
         "skill_manage(action='write_file', name='{}', file_path='references/example.md', file_content='...')".format(name)
     )
+    _add_description_prompt_preview(result, content)
     return result
 
 
@@ -886,12 +942,14 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    return {
+    result = {
         "success": True,
         "message": f"Skill '{name}' updated (full rewrite).",
         "path": str(existing["path"]),
         "_change": {"description": _desc},
     }
+    _add_description_prompt_preview(result, content)
+    return result
 
 
 def _patch_skill(
@@ -1432,6 +1490,10 @@ SKILL_MANAGE_SCHEMA = {
         "Skip for simple one-offs. Confirm with user before creating/deleting.\n\n"
         "Good skills: trigger conditions, numbered steps with exact commands, "
         "pitfalls section, verification steps. Use skill_view() to see format examples.\n\n"
+        "Description: long descriptions are truncated to the first 57 chars "
+        "plus '...' in the system prompt skill index; longer text is visible "
+        "via skills_list/skill_view. Keep the trigger self-contained in that "
+        "first 57-char window: 'Use when <trigger>. <one-line behavior>.'\n\n"
         "Pinned skills are protected from deletion only — skill_manage(action='delete') "
         "will refuse with a message pointing the user to `hermes curator unpin <name>`. "
         "Patches and edits go through on pinned skills so you can still improve them as "
