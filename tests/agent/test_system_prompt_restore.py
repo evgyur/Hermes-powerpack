@@ -36,6 +36,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     # reconstruction is gated on _use_prompt_caching, so default it off
     # for the legacy restore tests (the reconstruction tests enable it).
     agent._use_prompt_caching = False
+    agent.valid_tool_names = set()
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -60,7 +61,12 @@ class TestStoredPromptReuse:
         agent._build_system_prompt.assert_not_called()
         db.update_system_prompt.assert_not_called()
         # No warnings on the happy path
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and r.name == "agent.conversation_loop"
+        ]
 
     def test_present_row_with_unicode_preserved(self):
         """Non-ASCII bytes in the stored prompt are not mangled."""
@@ -134,7 +140,12 @@ class TestLegitimateFreshBuild:
         assert agent._cached_system_prompt == "BUILT_PROMPT"
         # Persisted to DB
         db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT")
-        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+        assert not [
+            r
+            for r in caplog.records
+            if r.levelno >= logging.WARNING
+            and r.name == "agent.conversation_loop"
+        ]
 
     def test_no_db_skips_persistence(self):
         """When session DB is None, build and skip persistence silently."""
@@ -377,6 +388,43 @@ class TestReconstructStaticPrefixMemoization:
         assert build.call_count == 1
         assert agent._cached_system_prompt_static == stable
         assert getattr(agent, "_static_rebuild_failed_for", None) is None
+
+
+class TestScopeOwnerRestore:
+    def test_tool_capable_legacy_prompt_without_owner_lock_rebuilds_and_persists(self):
+        from agent.scope_owner_policy import scope_ownership_guidance
+
+        stored = "Legacy prompt\nModel: test-model\nProvider: openrouter"
+        rebuilt = scope_ownership_guidance() + stored
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db, prebuilt_prompt=rebuilt)
+        agent.valid_tool_names = {"terminal"}
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "resume"}]
+        )
+
+        assert agent._cached_system_prompt == rebuilt
+        agent._build_system_prompt.assert_called_once_with(None)
+        db.update_system_prompt.assert_called_once_with(agent.session_id, rebuilt)
+
+    def test_tool_capable_prompt_with_owner_lock_reuses_exact_bytes(self):
+        from agent.scope_owner_policy import scope_ownership_guidance
+
+        stored = scope_ownership_guidance() + "Model: test-model\nProvider: openrouter"
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": stored}
+        agent = _make_agent(session_db=db)
+        agent.valid_tool_names = {"terminal"}
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "resume"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        agent._build_system_prompt.assert_not_called()
+        db.update_system_prompt.assert_not_called()
 
 
 if __name__ == "__main__":

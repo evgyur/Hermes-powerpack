@@ -1163,23 +1163,17 @@ def build_resume_recovery_note(
     reason: Optional[str],
     message: str = "",
     *,
-    interactive: bool = True,
+    startup_resume: bool = False,
 ) -> str:
     """Build the resume-pending recovery system note for an interrupted turn.
 
     ``reason`` is the session's ``resume_reason`` (``restart_timeout``,
     ``shutdown_timeout``, or anything else → generic interruption phrasing).
-    ``message`` is the user's NEW message text; empty means this is the
-    startup auto-resume turn synthesized by
-    ``_schedule_resume_pending_sessions`` with no human message attached.
-
-    ``interactive`` selects the empty-message guidance: on interactive
-    platforms a human is present, so "report the restore and ask what next"
-    is right.  On non-interactive event platforms (webhook, API server —
-    adapters with ``interactive_resume = False``) nobody can answer; the
-    resumed turn must instead complete the interrupted work, or the task is
-    silently abandoned behind a "restored" acknowledgement that goes
-    nowhere (#57056).
+    ``startup_resume`` is exact event provenance, not a platform capability.
+    ``True`` means ``_schedule_resume_pending_sessions`` synthesized this turn
+    with no new human message, so the interrupted work must continue from the
+    transcript. ``False`` means a real inbound event is present and wins even
+    when its text is empty (for example captionless media).
     """
     reason_phrase = (
         "a gateway restart"
@@ -1188,7 +1182,7 @@ def build_resume_recovery_note(
         if reason == "shutdown_timeout"
         else "a gateway interruption"
     )
-    if message:
+    if not startup_resume:
         resume_guidance = (
             "Address the user's NEW message below FIRST and focus "
             "on what the user is asking now."
@@ -1197,20 +1191,12 @@ def build_resume_recovery_note(
             "Do NOT re-execute old tool calls — skip any "
             "unfinished work from the conversation history."
         )
-    elif interactive:
-        resume_guidance = (
-            "Report to the user that the session was restored "
-            "successfully and ask what they would like to do next."
-        )
-        tail_guidance = (
-            "Do NOT re-execute old tool calls — skip any "
-            "unfinished work from the conversation history."
-        )
     else:
         resume_guidance = (
-            "No user is present on this non-interactive platform, "
+            "No new user message is attached to this startup recovery turn, "
             "so do NOT emit a 'session restored' acknowledgement "
-            "or ask questions. Review the conversation history and "
+            "or ask questions. Review at least the latest 10 messages "
+            "in the conversation history, infer the active user request, and "
             "CONTINUE the interrupted task to completion."
         )
         tail_guidance = (
@@ -6258,20 +6244,10 @@ class TurnRunner:
         if _is_resume_pending:
             _reason = getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
             _persist_user_message_override = ctx.message
-            # The empty-message case is the auto-resume startup turn
-            # synthesized by _schedule_resume_pending_sessions — there is
-            # no NEW user message to address.  Guidance is adapter-aware:
-            # interactive platforms report the restore and ask what next;
-            # non-interactive event platforms (webhook, API server)
-            # continue the interrupted work instead, because nobody is
-            # present to answer and an acknowledgement would silently
-            # abandon the task (#57056).
-            _resume_adapter = self._runner._adapter_for_source(ctx.source)
-            _interactive_resume = bool(
-                getattr(_resume_adapter, "interactive_resume", True)
-            )
             ctx.message = build_resume_recovery_note(
-                _reason, ctx.message, interactive=_interactive_resume,
+                _reason,
+                ctx.message or "",
+                startup_resume=ctx.startup_resume,
             )
         elif _has_fresh_tool_tail:
             _persist_user_message_override = ctx.message
@@ -6312,13 +6288,10 @@ class TurnRunner:
             _sn_reason = (
                 getattr(_resume_entry, "resume_reason", None) or "restart_timeout"
             )
-            _sn_adapter = self._runner._adapter_for_source(ctx.source)
             ctx.message = build_resume_recovery_note(
                 _sn_reason,
                 "",
-                interactive=bool(
-                    getattr(_sn_adapter, "interactive_resume", True)
-                ),
+                startup_resume=ctx.startup_resume,
             )
 
         _approval_session_key = ctx.session_key or ""
@@ -12140,6 +12113,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 message_type=MessageType.TEXT,
                 source=source,
                 internal=True,
+                startup_resume=True,
             )
             task = asyncio.create_task(
                 self._run_startup_resume_event(adapter, event, entry.session_key)
@@ -20059,6 +20033,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=event.message_type,
+                startup_resume=event.startup_resume,
+                _trusted_restart_wake=getattr(
+                    event, "_hermes_trusted_restart_event", None
+                ),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
 
@@ -27666,6 +27644,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        startup_resume: bool = False,
+        _trusted_restart_wake: Any = None,
     ) -> Dict[str, Any]:
         """Profile-scoping wrapper around the agent run.
 
@@ -27686,6 +27666,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                startup_resume=startup_resume,
+                _trusted_restart_wake=_trusted_restart_wake,
             )
 
         profile_home = self._resolve_profile_home_for_source(source)
@@ -27699,6 +27681,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 persist_user_timestamp=persist_user_timestamp,
                 persist_user_display_kind=persist_user_display_kind,
                 message_type=message_type,
+                startup_resume=startup_resume,
+                _trusted_restart_wake=_trusted_restart_wake,
             )
 
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
@@ -27842,6 +27826,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None,
         message_type: Optional[str] = None,
+        startup_resume: bool = False,
+        _trusted_restart_wake: Any = None,
     ) -> Dict[str, Any]:
         """
         Run the agent with the given message and context.
@@ -28151,6 +28137,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             persist_user_message=persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
+            startup_resume=startup_resume,
         )
         turn_runner = TurnRunner(self, turn_ctx)
         # Callback invoked by agent on tool lifecycle events — extracted to

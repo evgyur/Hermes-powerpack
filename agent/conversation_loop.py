@@ -954,7 +954,13 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
 
 
 def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
-    """Return False when the persisted runtime-identity lines are stale."""
+    """Return False when runtime identity or mandatory prompt policy is stale."""
+
+    if getattr(agent, "valid_tool_names", None):
+        from agent.scope_owner_policy import scope_ownership_guidance
+
+        if scope_ownership_guidance() not in prompt:
+            return False
 
     def line_value(label: str) -> str:
         """Last matching line wins.

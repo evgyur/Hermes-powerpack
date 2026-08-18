@@ -2372,6 +2372,11 @@ class MessageEvent:
     # completion notifications) that must bypass user authorization checks.
     internal: bool = False
 
+    # Exact provenance for an empty startup auto-resume turn. ``internal`` is
+    # broader (background completions, handoffs, kickoffs), so recovery policy
+    # must not use it as the discriminator.
+    startup_resume: bool = False
+
     # Free-form per-event metadata.  Adapters may set platform-specific
     # signals here (e.g. WhatsApp sets ``whatsapp_from_owner=True`` when
     # the bridge is configured to forward owner-typed messages).  Plugins

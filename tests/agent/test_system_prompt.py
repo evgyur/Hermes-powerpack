@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.system_prompt import build_system_prompt, build_system_prompt_parts
+from agent.scope_owner_policy import scope_ownership_guidance
 
 
 def _make_agent(**overrides):
@@ -89,6 +90,19 @@ def _init_code_repo(path):
 
     subprocess.run(["git", "-C", str(path), "init", "-q"], check=True)
     (path / "main.py").write_text("print('hi')\n")
+
+
+class TestScopeOwnerPolicy:
+    def test_restricted_tool_agent_gets_exactly_one_stable_lock(self):
+        parts = _prompt_parts(_make_agent(valid_tool_names=["terminal"]))
+        assert parts["stable"].count("### Scope-owner lock") == 1
+        assert scope_ownership_guidance() in parts["stable"]
+        assert "### Scope-owner lock" not in parts["volatile"]
+
+    def test_toolless_agent_is_unchanged(self):
+        parts = _prompt_parts(_make_agent(valid_tool_names=[]))
+        assert "### Scope-owner lock" not in parts["stable"]
+        assert "### Scope-owner lock" not in parts["volatile"]
 
 
 class TestCodingContextBlock:
@@ -217,6 +231,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
     expected = "\n\n".join((
         "IDENTITY",
         "HELP",
+        scope_ownership_guidance().strip(),
         "STEER",
         "CODING_STABLE",
         "WORKSPACE",
@@ -246,7 +261,7 @@ def test_coding_prompt_preserves_legacy_workspace_order(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:5])
 
 
 class TestTelegramRichMessagesHint:
