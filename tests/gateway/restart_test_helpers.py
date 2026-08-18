@@ -37,6 +37,11 @@ class RestartTestAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class EmptySessionHistoryDB:
+    def get_messages(self, _session_id):
+        return []
+
+
 def make_restart_source(
     chat_id: str = "123456",
     chat_type: str = "dm",
@@ -158,6 +163,7 @@ def make_restart_runner(
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
     runner.session_store._entries = {}
+    runner._session_db = EmptySessionHistoryDB()
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

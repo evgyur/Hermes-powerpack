@@ -1200,9 +1200,12 @@ def build_resume_recovery_note(
             "CONTINUE the interrupted task to completion."
         )
         tail_guidance = (
-            "Do NOT re-run tool calls whose results already "
-            "appear in the history — resume from the first step "
-            "that has no recorded result."
+            "Do NOT re-run tool calls whose results already appear in the "
+            "history. A tool call with no recorded result has an UNKNOWN "
+            "outcome — do not execute it again; reconcile it from durable or "
+            "read-only state; if that is impossible, report the blocker. "
+            "Continue from the first step proven not to duplicate an external "
+            "effect."
         )
     return (
         f"[System note: The previous turn was interrupted by "
@@ -11739,6 +11742,175 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         {"restart_timeout", "shutdown_timeout", "restart_interrupted"}
     )
 
+    @staticmethod
+    def _startup_tool_calls_from_message(
+        msg: Dict[str, Any],
+    ) -> List[tuple[str, str]]:
+        """Return persisted ``(correlation_id, tool_name)`` pairs.
+
+        Responses/Codex stores both a provider item ``id`` (``fc_*``) and
+        the actual tool-result correlation key ``call_id`` (``call_*``).
+        The latter must win or a completed effect looks unresolved after a
+        restart.
+        """
+        tool_calls = msg.get("tool_calls")
+        if isinstance(tool_calls, str):
+            try:
+                tool_calls = json.loads(tool_calls)
+            except Exception:
+                tool_calls = []
+        calls: List[tuple[str, str]] = []
+        if isinstance(tool_calls, list):
+            for call in tool_calls:
+                if not isinstance(call, dict):
+                    continue
+                call_id = (
+                    call.get("call_id")
+                    or call.get("id")
+                    or call.get("tool_call_id")
+                    or ""
+                )
+                name = call.get("name")
+                function = call.get("function")
+                if not name and isinstance(function, dict):
+                    name = function.get("name")
+                calls.append((str(call_id), str(name or "unknown-tool")))
+        return calls
+
+    def _unresolved_startup_tool_call_risk(self, session_id: str) -> Optional[str]:
+        """Describe a recent tool dispatch whose durable outcome is unknown.
+
+        The assistant call is persisted before execution and its correlated
+        tool-result row only afterwards. Restarting between those writes makes
+        retrying unsafe. A later plain assistant response is a checkpoint that
+        bounds the scan, so stale malformed history cannot block forever.
+        """
+        raw_store = getattr(self, "_session_db", None)
+        if raw_store is None:
+            raw_store = getattr(getattr(self, "session_store", None), "_db", None)
+        raw_store = getattr(raw_store, "_db", raw_store)
+        if raw_store is None or not session_id:
+            return "tool history unavailable"
+        try:
+            get_messages = getattr(raw_store, "get_messages", None)
+            if not callable(get_messages):
+                return "tool history unavailable"
+            messages = get_messages(session_id)
+        except Exception as exc:
+            logger.warning(
+                "startup recovery: tool outcome lookup failed for %s: %s",
+                session_id,
+                exc,
+            )
+            return "tool history unavailable"
+        if not isinstance(messages, (list, tuple)):
+            return "tool history unavailable"
+
+        checkpoint_idx = -1
+        for idx, msg in enumerate(messages):
+            if (
+                msg.get("role") == "assistant"
+                and msg.get("content")
+                and not msg.get("tool_calls")
+            ):
+                checkpoint_idx = idx
+
+        unresolved: Dict[str, str] = {}
+        missing_id = 0
+        for msg in messages[checkpoint_idx + 1:]:
+            role = msg.get("role")
+            if role == "assistant" and msg.get("tool_calls"):
+                for call_id, name in self._startup_tool_calls_from_message(msg):
+                    if call_id:
+                        unresolved[call_id] = name
+                    else:
+                        missing_id += 1
+                        unresolved[f"__missing_call_id_{missing_id}"] = name
+            elif role == "tool":
+                call_id = str(msg.get("tool_call_id") or "")
+                if call_id:
+                    unresolved.pop(call_id, None)
+
+        if unresolved:
+            names = ", ".join(sorted(set(unresolved.values())))
+            return f"unresolved tool call(s): {names}"
+        return None
+
+    def _startup_resume_source_is_trusted_private(self, source: Any) -> bool:
+        """Limit withheld-effect alerts to DMs or configured private rooms."""
+        if source is None:
+            return False
+        if getattr(source, "chat_type", "dm") == "dm":
+            return True
+        if getattr(source, "platform", None) != Platform.TELEGRAM:
+            return False
+        chat_id = str(getattr(source, "chat_id", "") or "").strip()
+        try:
+            platform_cfg = self.config.platforms.get(Platform.TELEGRAM)
+            extra = getattr(platform_cfg, "extra", {}) if platform_cfg is not None else {}
+        except Exception:
+            extra = {}
+
+        def _ids(key: str) -> set[str]:
+            raw = extra.get(key) if isinstance(extra, dict) else None
+            if raw is None:
+                return set()
+            if isinstance(raw, (list, tuple, set)):
+                return {str(item).strip() for item in raw if str(item).strip()}
+            return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+        private_ids = _ids("private_chats")
+        public_ids = _ids("public_chats")
+        return bool(chat_id and chat_id in private_ids and chat_id not in public_ids)
+
+    def _schedule_startup_resume_withheld_alert(
+        self,
+        session_key: str,
+        source: Any,
+        reason: str,
+    ) -> None:
+        """Send at most one private alert for an ambiguous startup effect."""
+        alerted = getattr(self, "_startup_resume_withheld_alerted", None)
+        if alerted is None:
+            alerted = set()
+            self._startup_resume_withheld_alerted = alerted
+        key = (session_key, reason)
+        if key in alerted:
+            return
+        alerted.add(key)
+        if not self._startup_resume_source_is_trusted_private(source):
+            logger.warning("Startup resume withheld for %s: %s", session_key, reason)
+            return
+        adapter = self._adapter_for_source(source)
+        if adapter is None:
+            return
+
+        async def _send() -> None:
+            try:
+                metadata = self._thread_metadata_for_source(source)
+            except Exception:
+                metadata = None
+            message = (
+                "⚠️ Interrupted session was found after gateway startup, but "
+                f"auto-resume was withheld: {reason}.\n"
+                "Send a new message after reconciling the external effect."
+            )
+            try:
+                await adapter.send(source.chat_id, message, metadata=metadata)
+            except Exception as exc:
+                logger.warning(
+                    "startup resume withheld alert failed for %s: %s",
+                    session_key,
+                    exc,
+                )
+
+        try:
+            task = asyncio.create_task(_send())
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+        except RuntimeError:
+            logger.warning("Startup resume withheld for %s: %s", session_key, reason)
+
     async def _run_startup_resume_event(
         self,
         adapter: BasePlatformAdapter,
@@ -12092,6 +12264,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.warning(
                     "Skipping auto-resume for %s: authorization check failed: %s",
                     entry.session_key, exc,
+                )
+                continue
+
+            ambiguous_outcome = self._unresolved_startup_tool_call_risk(
+                str(getattr(entry, "session_id", "") or "")
+            )
+            if ambiguous_outcome:
+                reason = f"ambiguous-tool-outcome: {ambiguous_outcome}"
+                self._schedule_startup_resume_withheld_alert(
+                    entry.session_key,
+                    source,
+                    reason,
                 )
                 continue
 
