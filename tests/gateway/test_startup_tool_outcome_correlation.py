@@ -80,6 +80,12 @@ def test_missing_history_fails_closed():
     assert runner._unresolved_startup_tool_call_risk("sid") == "tool history unavailable"
 
 
+def test_empty_history_fails_closed():
+    runner, _ = make_restart_runner()
+    runner._session_db = HistoryDB([])
+    assert runner._unresolved_startup_tool_call_risk("sid") == "tool history unavailable"
+
+
 def test_resume_note_requires_reconciliation_before_retry():
     note = build_resume_recovery_note("restart_timeout", "", startup_resume=True)
     assert "UNKNOWN" in note
@@ -124,3 +130,38 @@ async def test_scheduler_withholds_unresolved_tool_effect_and_alerts_once(monkey
     assert runner._schedule_resume_pending_sessions() == 0
     await __import__("asyncio").sleep(0)
     assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_scheduler_withholds_empty_history_fail_closed(monkeypatch):
+    runner, adapter = make_restart_runner()
+    source = make_restart_source()
+
+    class Entry:
+        session_key = "telegram:123456"
+        session_id = "empty-sid"
+        resume_pending = True
+        suspended = False
+        origin = source
+        resume_reason = "restart_timeout"
+        last_resume_marked_at = datetime.now()
+        updated_at = datetime.now()
+
+    entry = Entry()
+    runner.session_store._entries = {entry.session_key: entry}
+    runner._session_db = HistoryDB([])
+    runner._is_session_running = lambda _key: False
+    monkeypatch.setattr(
+        "gateway.restart_loop_guard.check_and_record",
+        lambda *_args, **_kwargs: False,
+    )
+
+    assert runner._schedule_resume_pending_sessions() == 0
+    await __import__("asyncio").sleep(0)
+    assert adapter.sent == [
+        "⚠️ Interrupted session was found after gateway startup, but "
+        "auto-resume was withheld: ambiguous-tool-outcome: tool history "
+        "unavailable.\nSend a new message after reconciling the external "
+        "effect."
+    ]
+    assert entry.resume_pending is True

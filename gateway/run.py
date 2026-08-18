@@ -11803,7 +11803,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 exc,
             )
             return "tool history unavailable"
-        if not isinstance(messages, (list, tuple)):
+        if not isinstance(messages, (list, tuple)) or not messages:
             return "tool history unavailable"
 
         checkpoint_idx = -1
