@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
+import { ConfirmDialog } from '@/components/ui/confirm-dialog'
 import { Input } from '@/components/ui/input'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Tip } from '@/components/ui/tooltip'
@@ -21,11 +22,13 @@ import {
   RefreshCw,
   Terminal
 } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { cn } from '@/lib/utils'
-import { notify, notifyError } from '@/store/notifications'
+import { notify, notifyError, readableError } from '@/store/notifications'
 import { $profiles, refreshActiveProfile } from '@/store/profile'
 
+import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
@@ -43,6 +46,12 @@ interface GatewaySettingsState {
   remoteOauthConnected: boolean
   remoteTokenPreview: string | null
   remoteTokenSet: boolean
+  // Whether OS-keychain-backed encryption (Electron safeStorage) is available.
+  // Default true so we never gate on a value we haven't hydrated yet.
+  secureTokenStorage: boolean
+  // Whether the currently-persisted remote token is stored as plain text on
+  // disk (opted-in on a machine without secure storage). Drives the warning banner.
+  remoteTokenPlainText: boolean
   remoteUrl: string
   cloudOrg: string
   sshHost: string
@@ -50,6 +59,7 @@ interface GatewaySettingsState {
   sshPort: number | null
   sshKeyPath: string
   sshRemoteHermesPath: string
+  sshRemoteProfile: string
 }
 
 const SSH_HOST_CUSTOM = '__custom__'
@@ -61,13 +71,16 @@ const EMPTY_STATE: GatewaySettingsState = {
   remoteOauthConnected: false,
   remoteTokenPreview: null,
   remoteTokenSet: false,
+  secureTokenStorage: true,
+  remoteTokenPlainText: false,
   remoteUrl: '',
   cloudOrg: '',
   sshHost: '',
   sshUser: '',
   sshPort: null,
   sshKeyPath: '',
-  sshRemoteHermesPath: ''
+  sshRemoteHermesPath: '',
+  sshRemoteProfile: ''
 }
 
 export function savedCloudConnectionUrl(config: Pick<GatewaySettingsState, 'mode' | 'remoteUrl'>): string {
@@ -123,23 +136,6 @@ function ModeCard({
   )
 }
 
-function ScopeChip({ active, label, onSelect }: { active: boolean; label: string; onSelect: () => void }) {
-  return (
-    <button
-      className={cn(
-        'rounded-full border px-3 py-1 text-[length:var(--conversation-caption-font-size)] transition',
-        active
-          ? 'border-(--ui-stroke-secondary) bg-(--ui-bg-tertiary) text-(--ui-text-primary)'
-          : 'border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover)'
-      )}
-      onClick={onSelect}
-      type="button"
-    >
-      {label}
-    </button>
-  )
-}
-
 // `embedded` trims the page chrome for reuse inside the boot-failure recovery
 // card: the outer title/intro, the "Save for next restart" action, and the
 // Diagnostics row are redundant there (the card owns its header + a single
@@ -168,6 +164,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     setState(config)
     setConnectedCloudUrl(savedCloudConnectionUrl(config))
   }
+
+  // When set, the plain-text opt-in dialog is open; `apply` remembers whether
+  // the gated action was Save-for-restart (false) or Save-and-reconnect (true)
+  // so confirm resumes the right one.
+  const [plainTextConfirm, setPlainTextConfirm] = useState<null | { apply: boolean }>(null)
 
   // --- Hermes Cloud (cloud mode) state ---
   // One portal session powers discovery + the silent per-agent cascade. These
@@ -252,7 +253,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
   // syntactically plausible URL. The probe result drives whether we render the
   // OAuth login button or the session-token entry box. The effective auth mode
   // prefers a fresh probe result over the saved value.
-  const trimmedUrl = state.remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(state.remoteUrl)
 
   // The dashboardUrl of the currently-connected cloud instance (the saved
   // cloud connection's remoteUrl), normalized for comparison against each
@@ -404,6 +405,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     return () => void (cancelled = true)
   }, [state.mode])
 
+  // eslint-disable-next-line no-restricted-syntax -- monotonic request-sequence counters, not an atom mirror
   useEffect(() => {
     contextSeq.current += 1
     sshTestSeq.current += 1
@@ -411,7 +413,16 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     signingSeq.current += 1
     cloudConnectSeq.current += 1
     setLastTest(null)
-  }, [scope, state.mode, state.sshHost, state.sshUser, state.sshPort, state.sshKeyPath, state.sshRemoteHermesPath])
+  }, [
+    scope,
+    state.mode,
+    state.sshHost,
+    state.sshUser,
+    state.sshPort,
+    state.sshKeyPath,
+    state.sshRemoteHermesPath,
+    state.sshRemoteProfile
+  ])
 
   const oauthConnected = state.remoteOauthConnected
 
@@ -427,7 +438,7 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     return Boolean(remoteToken.trim()) || state.remoteTokenSet
   }, [authMode, oauthConnected, remoteToken, state.remoteTokenSet, trimmedUrl])
 
-  const payload = () => ({
+  const payload = (allowPlainTextToken?: boolean) => ({
     mode: state.mode,
     profile: scope ?? undefined,
     remoteAuthMode: authMode,
@@ -437,28 +448,31 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     sshUser: state.sshUser.trim() || undefined,
     sshPort: state.sshPort,
     sshKeyPath: state.sshKeyPath.trim() || undefined,
-    sshRemoteHermesPath: state.sshRemoteHermesPath.trim()
+    sshRemoteHermesPath: state.sshRemoteHermesPath.trim(),
+    // Preserve an intentional blank so an existing remote-profile mapping can
+    // be cleared instead of being mistaken for an omitted field.
+    sshRemoteProfile: state.sshRemoteProfile.trim(),
+    ...(allowPlainTextToken ? { allowPlainTextToken: true } : {})
   })
 
-  const save = async (apply: boolean) => {
+  // A pending Save/Apply would write a NEW token to disk in plain text when
+  // we're on a remote-like connection using token auth, the user typed a token,
+  // and this machine has no OS keyring (safeStorage unavailable). In that case
+  // we must get an explicit opt-in before persisting.
+  const wouldPersistPlainTextToken =
+    (state.mode === 'remote' || state.mode === 'cloud') &&
+    authMode !== 'oauth' &&
+    Boolean(remoteToken.trim()) &&
+    state.secureTokenStorage === false
+
+  const performSave = async (apply: boolean, allowPlainTextToken: boolean) => {
     const seq = ++saveSeq.current
-
-    if (state.mode === 'remote' && !canUseRemote) {
-      notify({
-        kind: 'warning',
-        title: g.incompleteTitle,
-        message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
-      })
-
-      return
-    }
-
     setSaving(true)
 
     try {
       const next = apply
-        ? await window.hermesDesktop.applyConnectionConfig(payload())
-        : await window.hermesDesktop.saveConnectionConfig(payload())
+        ? await window.hermesDesktop.applyConnectionConfig(payload(allowPlainTextToken))
+        : await window.hermesDesktop.saveConnectionConfig(payload(allowPlainTextToken))
 
       if (seq !== saveSeq.current) {
         return
@@ -474,6 +488,13 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
     } catch (err) {
       if (seq !== saveSeq.current) {
         return
+      }
+
+      // The plain-text opt-in path runs inside ConfirmDialog's onConfirm, which
+      // keeps the dialog open with an inline error when it throws — rethrow a
+      // readable message there so a failed save can't play the success beat.
+      if (allowPlainTextToken) {
+        throw new Error(readableError(err, apply ? g.applyFailed : g.saveFailed).message)
       }
 
       const sshError = err && typeof err === 'object' && 'sshError' in err ? String(err.sshError) : ''
@@ -502,6 +523,27 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         setSaving(false)
       }
     }
+  }
+
+  const save = async (apply: boolean) => {
+    if (state.mode === 'remote' && !canUseRemote) {
+      notify({
+        kind: 'warning',
+        title: g.incompleteTitle,
+        message: authMode === 'oauth' ? g.incompleteSignIn : g.incompleteToken
+      })
+
+      return
+    }
+
+    // Defer to the opt-in dialog; confirm resumes with allowPlainTextToken.
+    if (wouldPersistPlainTextToken) {
+      setPlainTextConfirm({ apply })
+
+      return
+    }
+
+    await performSave(apply, false)
   }
 
   // OAuth sign-in: persist the URL + oauth mode first (so the saved config has
@@ -1014,25 +1056,46 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         </div>
       )}
 
+      {/* Per-profile gateway overrides: an explicit subsection (not an ambient
+          page-scope chip row) — pick which target the connection controls
+          below edit: the default connection or one named profile's override. */}
       {namedProfiles.length > 0 ? (
-        <div className="mb-5 grid gap-2">
+        <div className="mb-5 grid gap-1">
           <div className="text-[length:var(--conversation-caption-font-size)] font-medium text-(--ui-text-secondary)">
-            {g.appliesTo}
-          </div>
-          <div className="flex flex-wrap gap-1.5">
-            <ScopeChip active={scope === null} label={g.allProfiles} onSelect={() => setScope(null)} />
-            {namedProfiles.map(profile => (
-              <ScopeChip
-                active={scope === profile.name}
-                key={profile.name}
-                label={profile.name}
-                onSelect={() => setScope(profile.name)}
-              />
-            ))}
+            {g.profileOverridesTitle}
           </div>
           <p className="text-[length:var(--conversation-caption-font-size)] leading-(--conversation-caption-line-height) text-(--ui-text-tertiary)">
-            {scope === null ? g.defaultConnection : g.profileConnection(scope)}
+            {g.profileOverridesDesc}
           </p>
+          <ListRow
+            action={
+              scope === null ? (
+                <Pill tone="primary">{g.overrideEditing}</Pill>
+              ) : (
+                <Button aria-label={g.allProfiles} onClick={() => setScope(null)} size="sm" variant="outline">
+                  {g.overrideEdit}
+                </Button>
+              )
+            }
+            description={g.defaultConnection}
+            title={g.allProfiles}
+          />
+          {namedProfiles.map(profile => (
+            <ListRow
+              action={
+                scope === profile.name ? (
+                  <Pill tone="primary">{g.overrideEditing}</Pill>
+                ) : (
+                  <Button aria-label={profile.name} onClick={() => setScope(profile.name)} size="sm" variant="outline">
+                    {g.overrideEdit}
+                  </Button>
+                )
+              }
+              description={scope === profile.name ? g.profileConnection(profile.name) : g.overrideSelectHint}
+              key={profile.name}
+              title={profile.name}
+            />
+          ))}
         </div>
       ) : null}
 
@@ -1053,11 +1116,11 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
         <div className="grid auto-rows-fr grid-cols-1 gap-2 sm:grid-cols-2 min-[72rem]:grid-cols-4">
           <ModeCard
             active={state.mode === 'local'}
-            description={g.localDesc}
+            description={scope === null ? g.localDesc : g.inheritDesc}
             disabled={state.envOverride}
             icon={Monitor}
             onSelect={() => setState(current => ({ ...current, mode: 'local' }))}
-            title={g.localTitle}
+            title={scope === null ? g.localTitle : g.inheritTitle}
           />
           <ModeCard
             active={state.mode === 'cloud'}
@@ -1299,25 +1362,39 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
 
           {/* Session-token gateways: keep the existing token entry box. */}
           {state.mode === 'remote' && authResolved && authMode === 'token' ? (
-            <ListRow
-              action={
-                <Input
-                  autoComplete="off"
-                  className={cn('h-8 font-mono', CONTROL_TEXT)}
-                  disabled={state.envOverride}
-                  onChange={event => setRemoteToken(event.target.value)}
-                  placeholder={
-                    state.remoteTokenSet
-                      ? g.existingToken(state.remoteTokenPreview ?? g.savedToken)
-                      : g.pasteSessionToken
-                  }
-                  type="password"
-                  value={remoteToken}
-                />
-              }
-              description={g.tokenDesc}
-              title={g.tokenTitle}
-            />
+            <>
+              <ListRow
+                action={
+                  <Input
+                    autoComplete="off"
+                    className={cn('h-8 font-mono', CONTROL_TEXT)}
+                    disabled={state.envOverride}
+                    onChange={event => setRemoteToken(event.target.value)}
+                    placeholder={
+                      state.remoteTokenSet
+                        ? g.existingToken(state.remoteTokenPreview ?? g.savedToken)
+                        : g.pasteSessionToken
+                    }
+                    type="password"
+                    value={remoteToken}
+                  />
+                }
+                description={g.tokenDesc}
+                title={g.tokenTitle}
+              />
+
+              {/* The saved token is on disk in plain text (no OS keyring). Same
+                  banner idiom as envOverride so it reads as a real warning. */}
+              {state.remoteTokenPlainText ? (
+                <div className="mt-2 flex items-start gap-2 rounded-xl border border-destructive/30 bg-destructive/10 px-3 py-2.5 text-[length:var(--conversation-caption-font-size)] text-destructive">
+                  <AlertCircle className="mt-0.5 size-4 shrink-0" />
+                  <div>
+                    <div className="font-medium">{g.plainTextStoredTitle}</div>
+                    <div className="mt-1 leading-5">{g.plainTextStoredDesc}</div>
+                  </div>
+                </div>
+              ) : null}
+            </>
           ) : null}
         </div>
       ) : null}
@@ -1422,6 +1499,20 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
             description={g.sshHermesPathDesc}
             title={g.sshHermesPathTitle}
           />
+          {scope !== null ? (
+            <ListRow
+              action={
+                <Input
+                  className={cn('h-8 font-mono', CONTROL_TEXT)}
+                  onChange={event => setState(current => ({ ...current, sshRemoteProfile: event.target.value }))}
+                  placeholder={scope}
+                  value={state.sshRemoteProfile}
+                />
+              }
+              description={g.sshRemoteProfileDesc}
+              title={g.sshRemoteProfileTitle}
+            />
+          ) : null}
         </div>
       ) : null}
 
@@ -1486,6 +1577,29 @@ export function GatewaySettings({ embedded = false }: { embedded?: boolean } = {
           />
         </div>
       )}
+
+      {/* Unified Gateways page: the full connections registry (add/edit/delete
+          named agent sources) lives on this page now, below the window
+          connection controls. Hidden in the embedded (boot-recovery) form. */}
+      {embedded ? null : <ConnectionsRegistrySection />}
+
+      {/* Plain-text token opt-in: gated when secure storage is unavailable and a
+          new token would be persisted. Confirm resumes the remembered save/apply. */}
+      <ConfirmDialog
+        confirmLabel={g.plainTextConfirmAction}
+        description={g.plainTextConfirmDesc}
+        destructive
+        onClose={() => setPlainTextConfirm(null)}
+        onConfirm={async () => {
+          if (!plainTextConfirm) {
+            return
+          }
+
+          await performSave(plainTextConfirm.apply, true)
+        }}
+        open={plainTextConfirm !== null}
+        title={g.plainTextConfirmTitle}
+      />
     </SettingsContent>
   )
 }
