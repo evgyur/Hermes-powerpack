@@ -1,8 +1,19 @@
 ---
 name: piapi-video-toolkit
-description: Use when choosing PiAPI video models, comparing Seedance/Veo/Kling/Wan, estimating 5s/10s/15s generation cost, planning generate -> remove watermark -> download workflows, or preparing a concise client-ready video API recommendation.
+description: Use when planning PiAPI video generation workflows.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
+metadata:
+  hermes:
+    tags:
+    - workshop
+    - piapi-video-toolkit
 ---
-
 # PiAPI Video Generation
 
 Use this skill when the task is about PiAPI video generation: model choice, pricing, duration tradeoffs, or production workflow design.

@@ -1,15 +1,28 @@
 ---
 name: present
-description: Generates polished HTML presentations/documents for chat using template routing (general/report/offer) and sends them as .html attachments.
+description: Use when generating polished HTML presentations.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [presentation, slides, html, reports, documents]
-    related_skills: [powerpoint, google-workspace]
+    tags:
+    - presentation
+    - slides
+    - html
+    - reports
+    - documents
+    related_skills:
+    - powerpoint
+    - google-workspace
   slash:
     command: /present
     emoji: 📄
 ---
-
 # /present
 
 Универсальный рендерер для **любого объёма информации** в читаемый HTML: отчёты, офферы, планы, исследования, переговорные брифы, longread-конспекты.

@@ -1,14 +1,27 @@
 ---
 name: supabase-project-ops
-description: "Plan and operate Supabase-backed app features: auth, tables, migrations, RLS, local/dev/prod separation, and safe credential handling."
+description: Use when operating Supabase projects safely.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [supabase, backend, database, auth, rls, migrations, workshop]
-    related_skills: [server-doctor, public-endpoint-ops]
+    tags:
+    - supabase
+    - backend
+    - database
+    - auth
+    - rls
+    - migrations
+    - workshop
+    related_skills:
+    - server-doctor
+    - public-endpoint-ops
 ---
-
 # Supabase Project Ops
 
 Use this when a workshop project needs a real backend: auth, profiles, CRM-like data, admin screens, or app state.

@@ -1,14 +1,28 @@
 ---
 name: refero-web-design
-description: "Website and product UI design workflow using Refero-style reference research. Use for web design, redesign, landing pages, SaaS pages, dashboards, pricing pages, and frontend visual polish."
+description: Use when designing web UI from visual references.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [refero, design, web-design, ui, landing-pages, frontend, workshop]
-    related_skills: [hallmark, webd, taste-skill]
+    tags:
+    - refero
+    - design
+    - web-design
+    - ui
+    - landing-pages
+    - frontend
+    - workshop
+    related_skills:
+    - hallmark
+    - webd
+    - taste-skill
 ---
-
 # Refero Web Design
 
 Use this skill to make web UI look researched, intentional, and implementation-ready instead of generic AI output.

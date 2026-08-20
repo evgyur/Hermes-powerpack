@@ -1,14 +1,24 @@
 ---
 name: par
-description: "Parallel-style search workflow for fast web/source discovery. Use for /par, broad web scans, repo/vendor discovery, and quick source collection before deeper synthesis."
+description: Use when running fast web and source discovery.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [parallel, search, web, discovery, workshop]
-    related_skills: [perplex, deep]
+    tags:
+    - parallel
+    - search
+    - web
+    - discovery
+    - workshop
+    related_skills:
+    - perplex
 ---
-
 # /par — Parallel Search workflow
 
 Use this for fast source discovery when the user needs breadth before depth.

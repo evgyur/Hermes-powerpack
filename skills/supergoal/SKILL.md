@@ -1,14 +1,26 @@
 ---
 name: supergoal
-description: "Principal-grade plan-only workflow for non-trivial software/product work. Builds a verified execution package before handing off to /goal or an implementation agent."
+description: Use when planning complex work before execution.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [planning, execution, roadmap, autonomous-work, verification, workshop]
-    related_skills: [writing-plans, test-driven-development, requesting-code-review]
+    tags:
+    - planning
+    - execution
+    - roadmap
+    - autonomous-work
+    - verification
+    - workshop
+    related_skills:
+    - test-driven-development
+    - requesting-code-review
 ---
-
 # SuperGoal
 
 Use this when a project is too large, risky, or ambiguous for a one-shot answer.

@@ -1,12 +1,24 @@
 ---
 name: decision
-description: "Senior decision-making framework for important strategic, operational, product, technical, hiring, financial, or life choices. Use when the user invokes /decision or asks to choose between options, evaluate a tradeoff, decide whether to do something, or structure a high-stakes choice."
+description: Use when making high-stakes decisions and tradeoffs.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [decision-making, strategy, tradeoffs, planning]
-    related_skills: [reasoning-personas, rp]
+    tags:
+    - decision-making
+    - strategy
+    - tradeoffs
+    - planning
+    related_skills:
+    - reasoning-personas
+    - rp
 ---
-
 # /decision — Decision Framework
 
 Use this skill when the user invokes `/decision` or asks for help making a meaningful choice.

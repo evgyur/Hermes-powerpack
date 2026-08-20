@@ -1,14 +1,24 @@
 ---
 name: po
-description: "Prompt Optimizer. Turns a rough request into three stronger prompts without executing the task. Use for /po, prompt optimization, prompt variants, or when a user wants a better prompt for another model/agent."
+description: Use when optimizing a prompt without executing it.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [prompting, prompt-optimizer, codex, workshop]
-    related_skills: [codex, hermes-agent]
+    tags:
+    - prompting
+    - prompt-optimizer
+    - codex
+    - workshop
+    related_skills:
+    - codex
+    - hermes-agent
 ---
-
 # /po — Prompt Optimizer
 
 Use this skill when the user wants to improve a prompt rather than complete the underlying task.

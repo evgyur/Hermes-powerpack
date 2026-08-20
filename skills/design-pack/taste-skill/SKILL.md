@@ -1,11 +1,28 @@
 ---
 name: taste-skill
-description: Anti-slop frontend skill for landing pages, portfolios, and redesigns. Use when the user asks for premium UI, visual polish, taste review, frontend design generation, redesign, or avoiding generic AI-looking pages. Alias-compatible local name for upstream design-taste-frontend.
+description: Use when polishing frontend UI and avoiding generic design.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
 source: https://github.com/Leonxlnx/taste-skill/tree/main/skills/taste-skill
 metadata:
   hermes:
-    tags: [design, ui, frontend, taste, anti-slop, redesign, landing-page]
-    related_skills: [impeccable, hallmark, refero-design, webd, design-taste-frontend]
+    tags:
+    - design
+    - ui
+    - frontend
+    - taste
+    - anti-slop
+    - redesign
+    - landing-page
+    related_skills:
+    - hallmark
+    - webd
+    - design-taste-frontend
 ---
 # tasteskill: Anti-Slop Frontend Skill
 

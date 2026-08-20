@@ -1,14 +1,27 @@
 ---
 name: public-endpoint-ops
-description: "Expose, verify, diagnose, or remove public HTTP endpoints safely: DNS, nginx/reverse proxy, TLS, ports, health checks, and rollback notes."
+description: Use when operating public HTTP endpoints safely.
 version: 1.0.0
+author: Hermes Powerpack
 license: MIT
+platforms:
+- linux
+- macos
+- windows
 metadata:
   hermes:
-    tags: [endpoint, nginx, tls, dns, deploy, devops, workshop]
-    related_skills: [server-doctor, porkbun-api-dns]
+    tags:
+    - endpoint
+    - nginx
+    - tls
+    - dns
+    - deploy
+    - devops
+    - workshop
+    related_skills:
+    - server-doctor
+    - porkbun-api-dns
 ---
-
 # Public Endpoint Ops
 
 Use this when a local service must become reachable through a public domain or when an existing public endpoint fails.

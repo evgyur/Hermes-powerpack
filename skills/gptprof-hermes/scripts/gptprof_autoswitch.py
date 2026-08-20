@@ -19,7 +19,7 @@ import aiohttp
 
 HERE = Path(__file__).resolve().parent
 SEND_BUTTONS = Path(os.getenv("GPTPROF_SEND_BUTTONS", str(HERE / "send_buttons.py")))
-AUTH_PATH = Path(os.getenv("HERMES_AUTH", "/home/hermes/.hermes/auth.json"))
+AUTH_PATH = Path(os.getenv("HERMES_AUTH", "~/.hermes/auth.json")).expanduser()
 THRESHOLD = int(os.getenv("GPTPROF_AUTOSWITCH_THRESHOLD", "5"))
 LOCK_PATH = Path(os.getenv("GPTPROF_AUTOSWITCH_LOCK", "/tmp/gptprof-autoswitch.lock"))
 STATE_PATH = Path(os.getenv("GPTPROF_AUTOSWITCH_STATE", "/tmp/gptprof_autoswitch_state.json"))

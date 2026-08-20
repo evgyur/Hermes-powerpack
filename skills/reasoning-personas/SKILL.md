@@ -1,8 +1,19 @@
 ---
 name: reasoning-personas
-description: "Activate high-agency thinking modes for brainstorming, decisions, plan review, architecture, and tradeoffs."
+description: Use when applying persona-based reasoning modes.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
+metadata:
+  hermes:
+    tags:
+    - workshop
+    - reasoning-personas
 ---
-
 # Reasoning Personas
 
 Personas are lightweight reasoning modes that change which questions the agent asks before answering.

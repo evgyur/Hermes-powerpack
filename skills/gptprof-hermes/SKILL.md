@@ -1,13 +1,24 @@
 ---
 name: gptprof-hermes
-description: "Public Hermes skill: ChatGPT profile card with Telegram inline buttons showing remaining %, /gptt /mmfast aliases (both persistent --global), autoswitch on limit exhaustion. Callback writes global config.yaml — not just session override."
+description: Use when switching ChatGPT profiles in Hermes.
+version: 1.0.0
+author: Hermes Powerpack
+license: MIT
+platforms:
+- linux
+- macos
+- windows
 user-invocable: true
 disable-model-invocation: true
 command-dispatch: tool
 command-tool: gptprof
 command-arg-mode: raw
+metadata:
+  hermes:
+    tags:
+    - workshop
+    - gptprof-hermes
 ---
-
 # gptprof-hermes
 
 Hermes-native skill for ChatGPT profile management: Telegram card with inline buttons showing **remaining %** per profile, `/gptt` / `/mmfast` quick aliases, and autoswitch when the active profile hits its limit.
@@ -59,8 +70,8 @@ See `references/callback-behavior.md` for full details.
 |----------|---------|-------|
 | `TELEGRAM_BOT_TOKEN` | env | Bot token for sending cards |
 | `GPTPROF_CHAT_ID` | env | Telegram chat ID for card delivery |
-| `HERMES_AUTH` | `/home/hermes/.hermes/auth.json` | Active profile detection |
-| `HERMES_CONFIG` | `/home/hermes/.hermes/config.yaml` | Model name display + global persistence |
+| `HERMES_AUTH` | `~/.hermes/auth.json` | Active profile detection |
+| `HERMES_CONFIG` | `~/.hermes/config.yaml` | Model name display + global persistence |
 | `HERMES_HCP` | `~/.hermes/gptprof/profiles` | Profile token directory |
 | `GPTPROF_ACCESS_REFRESH_SKEW` | `172800` | Refresh access tokens this many seconds before expiry |
 | `GPTPROF_FORCE_REFRESH` | `0` | Set `1` for one-off validation/rotation |
@@ -99,7 +110,7 @@ Type=oneshot
 User=hermes
 Environment=GPTPROF_INTEL64_OPENCLAW_SYNC=0
 Environment=GPTPROF_ACCESS_REFRESH_SKEW=172800
-ExecStart=/opt/hermes-agent/venv/bin/python3 /home/hermes/.local/bin/refresh_profiles.py
+ExecStart=/usr/bin/python3 %h/.local/bin/refresh_profiles.py
 ```
 
 ```ini
