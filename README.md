@@ -1,6 +1,6 @@
-# Hermes Powerpack
+# Hermes Powerpack Generation 2
 
-This public distribution includes upstream Hermes Agent plus a small public-safe Powerpack skill layer. See [README-POWERPACK.md](README-POWERPACK.md) for workshop install instructions.
+This public workshop distribution includes upstream Hermes Agent, the public-safe Powerpack skill layer, and the reviewed Generation 2 runtime-safety upgrade. See [README-POWERPACK.md](README-POWERPACK.md) for installation and [POWERPACK-GENERATION-2.md](POWERPACK-GENERATION-2.md) for what changed.
 
 ---
 

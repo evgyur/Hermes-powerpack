@@ -14,6 +14,7 @@ def test_powerpack_public_skills_exist():
         "skills/telegram/telegram-chip/SKILL.md",
         "scripts/install-powerpack.sh",
         "README-POWERPACK.md",
+        "POWERPACK-GENERATION-2.md",
         "WORKSHOP-SKILLS.md",
         "skills/po/SKILL.md",
         "skills/perplex/SKILL.md",
@@ -35,7 +36,9 @@ def test_powerpack_public_skills_exist():
 def test_public_powerpack_files_do_not_include_private_markers():
     root = Path(__file__).resolve().parents[2]
     scanned_roots = [
+        root / "README.md",
         root / "README-POWERPACK.md",
+        root / "POWERPACK-GENERATION-2.md",
         root / "WORKSHOP-SKILLS.md",
         root / "skills",
         root / "scripts",

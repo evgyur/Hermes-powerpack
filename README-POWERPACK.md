@@ -1,9 +1,12 @@
-# Hermes Powerpack
+# Hermes Powerpack Generation 2
 
 A public, batteries-included Hermes Agent distribution for workshops and advanced users.
 
-This repository starts from upstream [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) and adds a small public-safe Powerpack layer:
+This repository starts from upstream [`NousResearch/hermes-agent`](https://github.com/NousResearch/hermes-agent) and adds a public-safe Powerpack layer plus the reviewed [Generation 2 runtime-safety upgrade](POWERPACK-GENERATION-2.md):
 
+- fail-closed restart recovery for ambiguous tool outcomes;
+- scope-owner protection and startup provenance;
+- safer long-session compression and multiplex profile isolation;
 - decision and reasoning workflows;
 - rigorous execution / superpowers workflow;
 - presentation/document generation skill;
